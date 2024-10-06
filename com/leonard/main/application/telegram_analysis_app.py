@@ -10,7 +10,7 @@ import nest_asyncio
 from telethon import TelegramClient
 from telethon.tl.functions.channels import GetForumTopicsRequest
 from telethon.tl.functions.messages import GetHistoryRequest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 import pytz
 import os
@@ -70,10 +70,14 @@ async def fetch_messages(client, topic_id: Optional[int] = None, time_range: Opt
 
     messages = []
     offset_id = 0
-    while True:
+    limit = 100
+    reached_start = False
+    reached_end = False
+    count = 0
+    while not reached_end:
         history = await client(GetHistoryRequest(
             peer=target_channel,
-            limit=100,
+            limit=limit,
             offset_date=None,
             offset_id=offset_id,
             max_id=0,
@@ -84,33 +88,49 @@ async def fetch_messages(client, topic_id: Optional[int] = None, time_range: Opt
 
         if not history.messages:
             break
+        count += len(history.messages)
+        print(f"Fetched {count} messages")
 
-        print(f"Fetched {len(history.messages)} messages")
-   
-        i = 0
         for message in history.messages:
-            if topic_id is None or (
-                hasattr(message, 'reply_to') and 
-                message.reply_to and 
-                message.reply_to.forum_topic and 
-                (message.reply_to.reply_to_msg_id == topic_id or 
-                 (hasattr(message.reply_to, 'reply_to_top_id') and message.reply_to.reply_to_top_id == topic_id))
-            ):
-                if time_range:
-                    if time_range['start'] <= message.date <= time_range['end']:
-                        messages.append(Message(date=message.date, message=message.message))
-                        i += 1
-                else:
-                    messages.append(Message(date=message.date, message=message.message))
-                    i += 1
-        offset_id = history.messages[-1].id
-        if i == 0:
+            message_date = message.date.replace(tzinfo=timezone.utc)
+            message_text = message.message if message.message is not None else ""
+            
+            if time_range:
+                if message_date < time_range['start']:
+                    reached_end = True
+                    break
+                elif time_range['start'] <= message_date <= time_range['end']:
+                    reached_start = True
+                    if topic_id is None or (
+                        hasattr(message, 'reply_to') and 
+                        message.reply_to and 
+                        message.reply_to.forum_topic and 
+                        (message.reply_to.reply_to_msg_id == topic_id or 
+                         (hasattr(message.reply_to, 'reply_to_top_id') and message.reply_to.reply_to_top_id == topic_id))
+                    ):
+                        messages.append(Message(date=message_date, message=message_text))
+                elif message_date > time_range['end'] and reached_start:
+                    reached_end = True
+                    break
+            else:
+                if topic_id is None or (
+                    hasattr(message, 'reply_to') and 
+                    message.reply_to and 
+                    message.reply_to.forum_topic and 
+                    (message.reply_to.reply_to_msg_id == topic_id or 
+                     (hasattr(message.reply_to, 'reply_to_top_id') and message.reply_to.reply_to_top_id == topic_id))
+                ):
+                    messages.append(Message(date=message_date, message=message_text))
+
+        if reached_end or len(history.messages) < limit:
             break
+
+        offset_id = history.messages[-1].id
 
     return messages
 
 async def main():
-    st.title("Telegram Message Fetcher")
+    st.title("美股舆情分析")
 
     # Initialize the Telegram client inside the main function
     client = TelegramClient('session_name', api_id, api_hash)
@@ -192,10 +212,14 @@ async def main():
                             f.write(f"{msg.date.astimezone(beijing_tz).strftime('%Y-%m-%d %H:%M:%S')}: {msg.message}\n")
                         
                         segmentation_service = SegmentationService()
-                        words = segmentation_service.segment_and_add_to_anki('\n'.join([msg.message for msg in messages]), filename, "cognition", "cognitive_vocabulary")
-                        f.write(', '.join(words))
-
-                        st.write(f"Added {len(words)} words to Anki.")
+                        non_empty_messages = [msg.message for msg in messages if msg.message]
+                        if non_empty_messages:
+                            words = segmentation_service.segment_and_add_to_anki('\n'.join(non_empty_messages), filename, "cognition", "cognitive_vocabulary")
+                            f.write("\nSegmented Words:\n\n")
+                            f.write(', '.join(words))
+                            st.write(f"Added {len(words)} words to Anki.")
+                        else:
+                            st.write("No non-empty messages found to process.")
                     
                     # Provide a download link for the file
                     with open(filepath, 'rb') as f:
