@@ -1,7 +1,7 @@
 import subprocess
 import os
 from datetime import datetime
-from claude_agent import ClaudeAgent
+from com.leonard.main.infra.claude_agent import ClaudeAgent
 from dotenv import load_dotenv
 import logging
 
